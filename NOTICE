@@ -1,0 +1,22 @@
+# NOTICE
+
+## Third-party code
+
+`jaka_arm/driver.py` and `jaka_arm/gripper.py` are adapted from
+AIIT-Roboarm (https://github.com/ - arm/jaka_ctrl_by_sdk.py,
+arm/jaka_gripper.py):
+
+    MIT License
+    Copyright (c) 2025 Xu Jinyang & Hou Yunlong
+
+## Proprietary binaries
+
+The JAKA (节卡) jkrc SDK binaries (`jkrc.so`, `libjakaAPI.so`, pyV2.1.7.0)
+are **not distributed with this repository** — they are licensed by JAKA and
+may not be redistributed without JAKA's written permission. Each user
+downloads them from the JAKA official download page and copies them into
+`jaka_arm/jaka_sdk/<platform>/` (`aarch64-linux-gnu`, `x86_64-linux-gnu`,
+`windows`); the directory is gitignored, and the loader in
+`jaka_arm/jaka_sdk/__init__.py` picks the platform automatically.
+`scripts/build.sh` fails fast with these instructions when the binaries are
+missing.

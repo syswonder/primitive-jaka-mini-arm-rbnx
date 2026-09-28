@@ -1,0 +1,26 @@
+manifestVersion: 1
+
+build: bash scripts/build.sh
+
+start: bash scripts/start.sh
+
+package:
+  name: "robonix.primitive.jaka.arm"
+  version: 0.1.0
+  description: "JAKA 6-DOF arm + TG-9801 gripper primitive (jkrc SDK over TCP)."
+  tags:
+    - primitive
+    - arm
+    - jaka
+    - robonix
+  maintainers:
+    - Felix <xi.lifeng@qq.com>
+  license: Apache-2.0
+
+capabilities:
+  - name: robonix/primitive/arm/joint_states
+  - name: robonix/primitive/arm/joint_command
+  - name: robonix/primitive/arm/pos_command
+  - name: robonix/primitive/arm/end_pose
+
+depends: []

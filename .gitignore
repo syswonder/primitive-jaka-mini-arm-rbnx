@@ -1,0 +1,9 @@
+rbnx-build/
+__pycache__/
+*.pyc
+.venv/
+logs/
+
+# JAKA proprietary SDK binaries (jkrc.so / libjakaAPI.so) — obtained from the
+# JAKA official download page, never committed (see NOTICE).
+jaka_arm/jaka_sdk/*/
