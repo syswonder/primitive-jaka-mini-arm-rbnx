@@ -239,10 +239,11 @@ def _state_loop() -> None:
         state = JointState()
         state.header.frame_id = str(_cfg.get("base_frame", "world"))
         if _last_gripper_open_m is None:
-            # Gripper reads are unavailable (e.g. RS485 signal polling broken):
-            # publish the arm joints alone so arm feedback never depends on
-            # gripper health. Once a valid gripper reading arrives the full
-            # name set (arm + gripper_joint) resumes on every publish.
+            # No gripper reading yet (first RS485 read still pending, or the
+            # channel is down): publish the arm joints alone so arm feedback
+            # never depends on gripper health. Once a valid gripper reading
+            # arrives the full name set (arm + gripper_joint) resumes on
+            # every publish.
             state.name = JOINT_NAMES
             state.position = list(joints)
         else:

@@ -20,8 +20,10 @@ JakaGripper：经 JAKA 末端 RS485L 控制 HKV TG-9801 夹爪（独立 SDK，�
 
 字节序：手册 3.3.2 称通信为小端序，u32 寄存器(grip_count/baudrate)低字在前。
 
-读策略：核心状态（state/position/current/hardness/action/adaptive_speed）常驻 6 个信号量，
-其余低频接口按需临时读（等 1s 让控制器完成首次轮询）。
+读策略：本控制器（RC 1.7.2）的信号量表在「表里 ≥2 条」时槽位会错位——值张冠李戴、
+间歇全 0（2026-10-08 直连控制器实测），唯一可靠的读法是「表里只放 1 条 +
+update_tio_rs_signal 强制轮询」。因此所有读接口都走 _read_reg 逐寄存器读（约 1.3s/个），
+低频接口也按需逐条读。
 
 依赖：仅 `import jkrc`（JAKA SDK，jkrc.pyd/jkrc.so 需在 sys.path 可导入）。
       CRC16 已内联，不再依赖 hkv_tg9801 示例 SDK。
@@ -83,8 +85,6 @@ REG = {
 SIG_HOLDING = 3   # 保持寄存器(03功能码)
 SIG_INPUT = 4     # 输入寄存器(04功能码)
 
-CORE = ["state", "position", "current", "hardness", "action", "adaptive_speed"]
-
 
 class JakaGripper:
     def __init__(self, robot=None, ip="10.5.5.100", chn=1, slave_id=1, baudrate=115200):
@@ -100,8 +100,7 @@ class JakaGripper:
             if ret[0] != 0:
                 raise ConnectionError(f"login 失败: {ret}")
         self._config_channel()
-        self._clear_signals()
-        self._add_core()
+        self._clear_signals()  # 清掉历史遗留条目，避免脏表干扰单条目读
 
     def _config_channel(self) -> None:
         """配置末端 RS485L 通道为 Modbus RTU 主站模式。
@@ -126,16 +125,13 @@ class JakaGripper:
         time.sleep(2)
         # 上电会复位 RS485 通道配置，必须先重新配置才能通信
         self._config_channel()
-        # 上电后重新加核心信号量（上电前加的信号量首次轮询时夹爪没电，会卡在 0）
         self._clear_signals()
-        self._add_core()
-        # 等夹爪就绪：就绪后会有待机电流(current 非 0)，最多等 15s
-        for _ in range(15):
-            time.sleep(1)
-            cur = self._read_core("current")
-            if cur is not None and cur != 0:
+        # 等夹爪就绪：就绪后会有待机电流（current 非 0）。单次读约 1.3s（见 _read_reg）
+        for _ in range(8):
+            cur = self._read_reg(REG["current"])
+            if cur:
                 return
-        print("Warning: 夹爪 15s 内未就绪（电流一直为 0），"
+        print("Warning: 夹爪未就绪（电流一直为 0），"
               "请检查 RS485 接线与通道配置")
 
     def power_off(self) -> None:
@@ -172,39 +168,35 @@ class JakaGripper:
             'sig_name': name, 'chn_id': self.chn, 'sig_type': sig_type,
             'sig_addr': addr, 'value': 0, 'frequency': 5})
 
-    def _add_core(self) -> None:
-        for name in CORE:
-            self._add_signal(name, REG[name])
-        time.sleep(1.2)  # 等控制器完成首次轮询
+    # 单条目读的等待时间：注册后等控制器写入表、update 触发轮询后等应答写回。
+    # 实测 (0.4,0.5) 12 次中 1 次失败、(0.6,0.6) 12/12 成功，取保守值。
+    _READ_WAIT_ADD = 0.5
+    _READ_WAIT_UPDATE = 0.6
 
-    def _read_core(self, name: str):
-        info = self.robot.get_rs485_signal_info()
-        if info[0] == 0:
-            for s in info[1]:
-                if s["sig_name"] == name:
-                    return s["value"]
+    def _read_reg(self, addr: int, sig_type: int = SIG_HOLDING, retries: int = 2):
+        """读单个寄存器（16 位无符号），失败返回 None。
+
+        唯一可靠读法：表里只放 1 条 → update_tio_rs_signal 强制轮询 → 读表。
+        多条目表的槽位会错位（值张冠李戴）。读后删除条目保持总线安静，
+        避免轮询流量与写指令抢 RS485 总线导致写丢帧。
+        """
+        for _ in range(max(1, retries)):
+            self._add_signal("_rd", addr, sig_type)
+            time.sleep(self._READ_WAIT_ADD)
+            self.robot.update_tio_rs_signal({"sig_name": "_rd", "frequency": 5})
+            time.sleep(self._READ_WAIT_UPDATE)
+            info = self.robot.get_rs485_signal_info()
+            if info[0] == 0:
+                for s in info[1]:
+                    if s["sig_name"] == "_rd":
+                        self.robot.del_tio_rs_signal("_rd")
+                        return s["value"]
+        self.robot.del_tio_rs_signal("_rd")
         return None
 
-    def _read_tmp(self, addr: int, sig_type: int = SIG_HOLDING):
-        """低频接口：临时读单个寄存器（保留核心信号量）。"""
-        self.robot.del_tio_rs_signal("_tmp")
-        self._add_signal("_tmp", addr, sig_type)
-        time.sleep(1.0)
-        val = self._read_core("_tmp")
-        return val
-
-    def _read_tmp_multi(self, addr: int, count: int, sig_type: int = SIG_HOLDING) -> list:
-        """低频接口：临时读连续 count 个寄存器。"""
-        self._clear_signals()  # 腾出信号量额度
-        names = [f"_m{i}" for i in range(count)]
-        for i, n in enumerate(names):
-            self._add_signal(n, addr + i, sig_type)
-        time.sleep(1.2)
-        info = self.robot.get_rs485_signal_info()
-        vals = {s["sig_name"]: s["value"] for s in info[1]} if info[0] == 0 else {}
-        self._clear_signals()
-        self._add_core()  # 恢复核心
-        return [vals.get(n) for n in names]
+    def _read_regs(self, addr: int, count: int, sig_type: int = SIG_HOLDING) -> list:
+        """读连续 count 个寄存器（逐个读，见 _read_reg）。"""
+        return [self._read_reg(addr + i, sig_type) for i in range(count)]
 
     # ---------- 运动接口 ----------
     def grip(self, speed: int = 1000) -> int:
@@ -254,7 +246,7 @@ class JakaGripper:
     # ---------- 读接口 ----------
     def _read_force(self, addr: int):
         """读单轴力(0x0000~0x0002，16 位有符号)。"""
-        v = self._read_tmp(addr)
+        v = self._read_reg(addr)
         if v is None:
             return None
         return v - 0x10000 if v >= 0x8000 else v
@@ -263,39 +255,39 @@ class JakaGripper:
     def read_force_fy(self): return self._read_force(REG["force_fy"])
     def read_force_fz(self): return self._read_force(REG["force_fz"])
 
-    def read_state(self):            return self._read_core("state")
-    def read_hardness(self):         return self._read_core("hardness")
-    def read_position(self):         return self._read_core("position")
-    def read_current(self):         return self._read_core("current")
-    def read_adaptive_speed(self):   return self._read_core("adaptive_speed")
-    def read_action(self):           return self._read_core("action")
+    def read_state(self):            return self._read_reg(REG["state"])
+    def read_hardness(self):         return self._read_reg(REG["hardness"])
+    def read_position(self):         return self._read_reg(REG["position"])
+    def read_current(self):          return self._read_reg(REG["current"])
+    def read_adaptive_speed(self):   return self._read_reg(REG["adaptive_speed"])
+    def read_action(self):           return self._read_reg(REG["action"])
 
-    def read_protocol(self):         return self._read_tmp(REG["protocol"])
-    def read_device_id(self):        return self._read_tmp(REG["device_id"])
-    def read_control_mode(self):     return self._read_tmp(REG["control_mode"])
-    def read_force_position_speed(self):  return self._read_tmp(REG["force_pos_speed"])
-    def read_force_position_target(self): return self._read_tmp(REG["force_pos_target"])
-    def read_target_force(self):     return self._read_tmp(REG["target_force"])
-    def read_open_position(self):    return self._read_tmp(REG["open_position"])
-    def read_close_position(self):   return self._read_tmp(REG["close_position"])
-    def read_force_position_state(self): return self._read_tmp(REG["force_pos_state"])
-    def read_eeprom_enabled(self):   return self._read_tmp(REG["eeprom_enabled"])
-    def read_error_flags(self):      return self._read_tmp(REG["error_flags"])
+    def read_protocol(self):         return self._read_reg(REG["protocol"])
+    def read_device_id(self):        return self._read_reg(REG["device_id"])
+    def read_control_mode(self):     return self._read_reg(REG["control_mode"])
+    def read_force_position_speed(self):  return self._read_reg(REG["force_pos_speed"])
+    def read_force_position_target(self): return self._read_reg(REG["force_pos_target"])
+    def read_target_force(self):     return self._read_reg(REG["target_force"])
+    def read_open_position(self):    return self._read_reg(REG["open_position"])
+    def read_close_position(self):   return self._read_reg(REG["close_position"])
+    def read_force_position_state(self): return self._read_reg(REG["force_pos_state"])
+    def read_eeprom_enabled(self):   return self._read_reg(REG["eeprom_enabled"])
+    def read_error_flags(self):      return self._read_reg(REG["error_flags"])
 
     def read_grip_count(self) -> int:
-        lo, hi = self._read_tmp_multi(REG["grip_count"], 2)
+        lo, hi = self._read_regs(REG["grip_count"], 2)
         if lo is None or hi is None:
             return None
         return (hi << 16) | lo  # 手册称小端序(低字在前)
 
     def read_baudrate(self) -> int:
-        lo, hi = self._read_tmp_multi(REG["baudrate"], 2)
+        lo, hi = self._read_regs(REG["baudrate"], 2)
         if lo is None or hi is None:
             return None
         return (hi << 16) | lo  # 手册称小端序(低字在前)
 
     def read_factory_number(self) -> str:
-        regs = self._read_tmp_multi(REG["factory_number"], 6, SIG_INPUT)
+        regs = self._read_regs(REG["factory_number"], 6, SIG_INPUT)
         if any(r is None for r in regs):
             return None
         length = regs[0]

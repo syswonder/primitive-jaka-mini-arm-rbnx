@@ -16,6 +16,10 @@ end RS485 channel. Provider ID is the deploy instance `name` (default
 - The gripper is a prismatic joint `gripper_joint` in **m** (0 = closed,
   `0.098` = fully open; TG-9801 stroke). Adaptive mode is binary: values
   below half stroke close to the configured force, at/above half stroke open.
+- A TG-9801 position read costs ~1.3 s (single-entry RS485 signal-table
+  path), so `gripper_joint` refreshes at ~0.5 Hz: the last reading is
+  republished at the full rate in between and may lag the fingers by up to a
+  couple of seconds. Arm joints are unaffected.
 
 ## Capabilities
 

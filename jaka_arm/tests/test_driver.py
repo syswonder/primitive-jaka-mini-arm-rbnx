@@ -1,18 +1,26 @@
 # SPDX-License-Identifier: Apache-2.0
 # -*- coding: utf-8 -*-
 """Unit tests for JakaDriver against a FakeRC stub (no hardware required)."""
+import time
 import unittest
 
 import numpy as np
 
-from jaka_arm.driver import JakaDriver, ABS, GRIPPER_STROKE_M
+from jaka_arm.driver import (
+    JakaDriver,
+    ABS,
+    GRIPPER_READ_INTERVAL_S,
+    GRIPPER_STROKE_M,
+)
 
 
 class FakeGripper:
     def __init__(self, pos):
         self.pos = pos
+        self.reads = 0
 
     def read_position(self):
+        self.reads += 1
         return self.pos
 
 
@@ -57,28 +65,61 @@ def make_driver(fake_rc, gripper_pos=None):
     return d
 
 
+def read_gripper_now(d):
+    """Force a fresh gripper read (bypassing the driver's read cache)."""
+    d._gripper_open_m_mono = None
+    return d.get_gripper_open_m()
+
+
 class TestGripperNormalization(unittest.TestCase):
     def test_reverse_travel(self):
         # Measured travel: 0 = open, 1000 = closed
         d = make_driver(FakeRC(), gripper_pos=0)
         d._gripper_open_pos, d._gripper_close_pos = 0, 1000
-        self.assertAlmostEqual(d.get_gripper_open_m(), GRIPPER_STROKE_M, places=6)
+        self.assertAlmostEqual(read_gripper_now(d), GRIPPER_STROKE_M, places=6)
         d._gripper.read_position = lambda: 1000
-        self.assertAlmostEqual(d.get_gripper_open_m(), 0.0, places=6)
+        self.assertAlmostEqual(read_gripper_now(d), 0.0, places=6)
         d._gripper.read_position = lambda: 500
-        self.assertAlmostEqual(d.get_gripper_open_m(), GRIPPER_STROKE_M / 2, places=6)
+        self.assertAlmostEqual(read_gripper_now(d), GRIPPER_STROKE_M / 2, places=6)
 
     def test_forward_travel(self):
         d = make_driver(FakeRC(), gripper_pos=1000)
         d._gripper_open_pos, d._gripper_close_pos = 1000, 0
-        self.assertAlmostEqual(d.get_gripper_open_m(), GRIPPER_STROKE_M, places=6)
+        self.assertAlmostEqual(read_gripper_now(d), GRIPPER_STROKE_M, places=6)
 
     def test_out_of_range_clips(self):
         d = make_driver(FakeRC(), gripper_pos=1500)
         d._gripper_open_pos, d._gripper_close_pos = 0, 1000
-        self.assertAlmostEqual(d.get_gripper_open_m(), 0.0, places=6)
+        self.assertAlmostEqual(read_gripper_now(d), 0.0, places=6)
         d._gripper.read_position = lambda: -100
-        self.assertAlmostEqual(d.get_gripper_open_m(), GRIPPER_STROKE_M, places=6)
+        self.assertAlmostEqual(read_gripper_now(d), GRIPPER_STROKE_M, places=6)
+
+
+class TestGripperReadCache(unittest.TestCase):
+    def test_within_interval_serves_cached_value(self):
+        d = make_driver(FakeRC(), gripper_pos=0)
+        d._gripper_open_pos, d._gripper_close_pos = 0, 1000
+        first = d.get_gripper_open_m()
+        self.assertEqual(d._gripper.reads, 1)
+        d._gripper.pos = 1000  # would read differently if re-read
+        self.assertEqual(d.get_gripper_open_m(), first)
+        self.assertEqual(d._gripper.reads, 1)
+
+    def test_rereads_after_interval(self):
+        d = make_driver(FakeRC(), gripper_pos=0)
+        d._gripper_open_pos, d._gripper_close_pos = 0, 1000
+        d.get_gripper_open_m()
+        d._gripper.pos = 1000
+        d._gripper_open_m_mono = time.monotonic() - GRIPPER_READ_INTERVAL_S - 1.0
+        self.assertAlmostEqual(d.get_gripper_open_m(), 0.0, places=6)
+        self.assertEqual(d._gripper.reads, 2)
+
+    def test_failed_read_backs_off(self):
+        d = make_driver(FakeRC())
+        d._gripper = FakeGripper(None)
+        self.assertIsNone(d.get_gripper_open_m())
+        self.assertIsNone(d.get_gripper_open_m())  # no immediate retry
+        self.assertEqual(d._gripper.reads, 1)
 
 
 class TestJointLimits(unittest.TestCase):

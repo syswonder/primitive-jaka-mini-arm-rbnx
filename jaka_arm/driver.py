@@ -30,6 +30,10 @@ JOINT_NAMES = [f"joint_{i}" for i in range(1, 7)]
 GRIPPER_JOINT_NAME = "gripper_joint"
 # TG-9801 total stroke (datasheet: 可调行程 0~98 mm)
 GRIPPER_STROKE_M = 0.098
+# A gripper position read costs ~1.3 s (single-entry RS485 signal-table path,
+# see gripper.JakaGripper._read_reg), so the 50 Hz state loop serves a cached
+# value and re-reads at most this often.
+GRIPPER_READ_INTERVAL_S = 2.0
 
 # JAKA Mini soft limits (user manual table 5-1, degrees). Verified against
 # the real arm before enabling motion; placeholder limits are from Zu3 docs.
@@ -69,6 +73,8 @@ class JakaDriver:
         self._gripper = None
         self._gripper_close_pos = 1000  # fallback: 1000 = closed (reverse travel)
         self._gripper_open_pos = 0      # fallback: 0 = open
+        self._gripper_open_m = None     # cached reading (see get_gripper_open_m)
+        self._gripper_open_m_mono = None
         self._connected = False
 
     # ---------- lifecycle ----------
@@ -131,6 +137,8 @@ class JakaDriver:
             self._connected = False
             self._gripper = None
             self._rc = None
+            self._gripper_open_m = None
+            self._gripper_open_m_mono = None
 
     def stop_motion(self) -> None:
         with self._lock:
@@ -153,17 +161,29 @@ class JakaDriver:
             return [float(a) for a in ret[1]]
 
     def get_gripper_open_m(self) -> float | None:
+        """Last known opening in m, re-read at most every GRIPPER_READ_INTERVAL_S.
+
+        The 50 Hz state loop must not read every cycle: a read stalls ~1.3 s
+        and keeps the half-duplex bus busy, risking dropped grip/release
+        frames. Between reads the previous value is served; a failed attempt
+        (None) also waits a full interval before retrying.
+        """
         with self._lock:
             if not self._connected:
                 return None
-            pos = self._gripper.read_position()
-            if pos is None:
-                return None
-            lo, hi = self._gripper_close_pos, self._gripper_open_pos
-            if hi == lo:
-                return 0.0
-            value = (pos - lo) / (hi - lo)  # 1 = fully open (both travel dirs)
-            return float(np.clip(value, 0, 1)) * GRIPPER_STROKE_M
+            now = time.monotonic()
+            if (self._gripper_open_m_mono is None
+                    or now - self._gripper_open_m_mono >= GRIPPER_READ_INTERVAL_S):
+                pos = self._gripper.read_position()
+                self._gripper_open_m_mono = time.monotonic()
+                if pos is not None:
+                    lo, hi = self._gripper_close_pos, self._gripper_open_pos
+                    if hi == lo:
+                        value = 0.0
+                    else:
+                        value = (pos - lo) / (hi - lo)  # 1 = fully open (both travel dirs)
+                    self._gripper_open_m = float(np.clip(value, 0, 1)) * GRIPPER_STROKE_M
+            return self._gripper_open_m
 
     def get_tcp_pose(self) -> tuple[tuple[float, float, float], tuple[float, float, float]] | None:
         """TCP pose as ((x, y, z) m, (rx, ry, rz) rad, R = Rz·Ry·Rx order)."""
