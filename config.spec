@@ -33,6 +33,15 @@ config:
   # Timeout for joint/pose move completion waits.
   move_timeout_s: 10.0
 
+  # list of 6 floats (rad), optional, default: unset (no motion on exit).
+  # On provider shutdown (Ctrl-C / `rbnx shutdown`), the gripper opens first
+  # (releasing any held object), then the six arm joints move to this pose,
+  # before the disconnect/power-off sequence — so the arm parks instead of
+  # stopping wherever it was commanded to last. Best-effort: bounded by
+  # move_timeout_s, failures are logged and power-off proceeds. Skipped
+  # while motion_enabled is false.
+  # shutdown_home_joints: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
   # float, Hz, default: 50.0.
   # joint_states / end_pose publish rate.
   state_publish_hz: 50.0

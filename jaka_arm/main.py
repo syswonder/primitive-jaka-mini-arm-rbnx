@@ -44,6 +44,7 @@ _cmd_queue: "queue.Queue[tuple[str, object] | None]" = queue.Queue()
 _cmd_thread: threading.Thread | None = None
 _last_motion_warn_s = 0.0
 _last_gripper_open_m: float | None = None
+_shutdown_done = False
 
 
 # ---- lifecycle --------------------------------------------------------------
@@ -126,7 +127,15 @@ def deactivate():
 
 @provider.on_shutdown
 def shutdown():
-    """Final cleanup: stop threads, abort motion, power off, logout."""
+    """Final cleanup: stop threads, optional homing, power off, logout.
+
+    The framework may invoke this twice on one teardown (Driver CMD_SHUTDOWN,
+    then the process-signal fallback); the first call wins.
+    """
+    global _shutdown_done
+    if _shutdown_done:
+        return Ok()
+    _shutdown_done = True
     _stop_event.set()
     for thread in (_state_thread, _cmd_thread):
         if thread is not None:
@@ -135,8 +144,44 @@ def shutdown():
         _cmd_queue.put(None)
         _cmd_thread.join(timeout=2.0)
     if _driver is not None:
+        _home_before_shutdown()
         _driver.disconnect()
     return Ok()
+
+
+def _home_before_shutdown() -> None:
+    """Best-effort gripper release + move to `shutdown_home_joints` before
+    the power-off sequence.
+
+    The gripper opens first so a held object is not dragged by the joint
+    move. Deployment opt-in: the key absent = no motion on exit. Respects
+    the motion_enabled safety gate; bounded by the driver's move_timeout_s
+    and never raises — power-off always proceeds.
+    """
+    home = _cfg.get("shutdown_home_joints")
+    if not home:
+        return
+    if not bool(_cfg.get("motion_enabled", False)):
+        print("[jaka_arm] shutdown: motion_enabled is false; skipping homing",
+              flush=True)
+        return
+    try:
+        target = [float(v) for v in home]
+    except (TypeError, ValueError):
+        print(f"[jaka_arm] shutdown: invalid shutdown_home_joints {home!r}; "
+              "skipping homing", flush=True)
+        return
+    print(f"[jaka_arm] shutdown: opening gripper, homing to "
+          f"{[round(v, 3) for v in target]}", flush=True)
+    try:
+        # Open first (drops any held object); a failed release is logged but
+        # does not block the homing move.
+        if not _driver.set_gripper_open_m(GRIPPER_STROKE_M):
+            print("[jaka_arm] shutdown: gripper open failed", flush=True)
+        if not _driver.move_joints_rad(target):
+            print("[jaka_arm] shutdown: homing failed or timed out", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[jaka_arm] shutdown: homing failed: {exc}", flush=True)
 
 
 # ---- ROS 2 callbacks (executor thread) --------------------------------------

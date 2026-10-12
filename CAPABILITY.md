@@ -40,4 +40,6 @@ end RS485 channel. Provider ID is the deploy instance `name` (default
   to `kine_inverse` with limit repair.
 - Joint targets outside the soft limits are rejected before the SDK call.
 - On `CMD_DEACTIVATE` / `CMD_SHUTDOWN` the provider aborts motion; shutdown
-  additionally disables and powers off the arm.
+  additionally disables and powers off the arm. With `shutdown_home_joints`
+  configured, shutdown first opens the gripper, then moves the arm to that
+  pose (best-effort, bounded by `move_timeout_s`; see config.spec).
