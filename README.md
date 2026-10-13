@@ -23,19 +23,16 @@ read-only first, verify feedback and estop, then enable motion in the deploy
 manifest. See the staged acceptance flow in the deploy repo
 (`robot-jaka-mini`).
 
-## Prerequisite: JAKA SDK binaries
+## JAKA SDK binaries
 
-The proprietary jkrc SDK (`jkrc.so`, `libjakaAPI.so`) is **not** in this
-repository (license — see [NOTICE](NOTICE)). Download the Linux SDK for your
-arch from the JAKA official download page and copy both files into:
+The aarch64 jkrc SDK (`jkrc.so`, `libjakaAPI.so`, pyV2.1.7.0) ships in this
+repository — Apache-2.0, added unmodified from the JAKA official download;
+see [NOTICE](NOTICE) and `jaka_arm/jaka_sdk/LICENSE`.
 
-```
-jaka_arm/jaka_sdk/aarch64-linux-gnu/   # Jetson / ARM
-jaka_arm/jaka_sdk/x86_64-linux-gnu/    # x86_64
-```
-
-The directory is gitignored; `scripts/build.sh` fails fast with these
-instructions when the files are missing.
+For other platforms (`x86_64-linux-gnu`, `windows`), download the SDK from
+the JAKA official download page and place both files under
+`jaka_arm/jaka_sdk/<platform>/`; `scripts/build.sh` fails fast with these
+instructions when they are missing.
 
 ## Build
 
