@@ -137,12 +137,13 @@ def shutdown():
         return Ok()
     _shutdown_done = True
     _stop_event.set()
+    if _cmd_thread is not None:
+        # Sentinel before join: the worker blocks on get() until it sees None,
+        # so joining first would stall for the full timeout.
+        _cmd_queue.put(None)
     for thread in (_state_thread, _cmd_thread):
         if thread is not None:
             thread.join(timeout=2.0)
-    if _cmd_thread is not None:
-        _cmd_queue.put(None)
-        _cmd_thread.join(timeout=2.0)
     if _driver is not None:
         _home_before_shutdown()
         _driver.disconnect()
